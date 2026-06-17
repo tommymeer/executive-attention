@@ -146,14 +146,14 @@ def classify_findings(theme_map: dict, scores: dict) -> dict:
         }
 
         if score >= CONVERGENT_THRESHOLD and distinct_tool_count >= 2:
-            # Check for time pressure → Decision Cannot Be Postponed
+            # All convergent findings go into requires_attention
+            requires_attention.append(item)
+
+            # Check for time pressure → also goes into cannot_postpone
             has_pressure, time_ref = has_time_pressure(theme_signals)
             item["time_reference"] = time_ref
-
             if has_pressure:
                 cannot_postpone.append(item)
-            else:
-                requires_attention.append(item)
 
         elif score >= WATCH_THRESHOLD:
             watch.append(item)
