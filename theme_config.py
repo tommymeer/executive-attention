@@ -1,4 +1,4 @@
-X"""
+"""
 theme_config.py
 Executive Attention Synthesizer — Theme Configuration
 
