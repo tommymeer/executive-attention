@@ -163,6 +163,23 @@ def classify_findings(theme_map: dict, scores: dict) -> dict:
     cannot_postpone.sort(key=lambda x: x["score"], reverse=True)
     watch.sort(key=lambda x: x["score"], reverse=True)
 
+    # Apply output caps — excess findings move to watch.
+    # Keeps the tool as a prioritization instrument, not a firehose.
+    # Scores determine which findings make the cut.
+    ATTENTION_CAP = 3
+    POSTPONE_CAP = 2
+
+    if len(requires_attention) > ATTENTION_CAP:
+        overflow = requires_attention[ATTENTION_CAP:]
+        requires_attention = requires_attention[:ATTENTION_CAP]
+        for item in overflow:
+            if not any(w["theme"] == item["theme"] for w in watch):
+                watch.append(item)
+        watch.sort(key=lambda x: x["score"], reverse=True)
+
+    if len(cannot_postpone) > POSTPONE_CAP:
+        cannot_postpone = cannot_postpone[:POSTPONE_CAP]
+
     return {
         "requires_attention": requires_attention,
         "cannot_postpone": cannot_postpone,
