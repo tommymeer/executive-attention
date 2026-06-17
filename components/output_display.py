@@ -237,10 +237,12 @@ def render_watch_items(watch_items: list, has_capped_findings: bool = False):
     label = f"Watch Items — {len(watch_items)} pattern(s)"
     with st.expander(label):
         if has_capped_findings:
-            st.info(
-                "Some findings above the convergence threshold were moved here to keep the "
-                "primary output focused. If the top findings don't reflect your primary concern, "
-                "review the scores below — a high-scoring item here may be more relevant for your situation."
+            st.warning(
+                "**One or more items below scored at or above the convergence threshold** — "
+                "they appear here because the primary output is capped at 3 findings, not because "
+                "the signal is weaker. The scores and tool counts are the ground truth. "
+                "If the primary findings don't match your most urgent concern, check the scores below: "
+                "a high-scoring item here is as convergent as anything in the report above."
             )
         else:
             st.caption(
