@@ -47,19 +47,32 @@ def aggregate_by_theme(signals: list) -> dict:
 
 # ── Convergence scoring ───────────────────────────────────────────────────────
 
+# Maximum signals per theme used in convergence scoring.
+# Prevents broad keyword dictionaries from inflating scores through volume.
+# Top signals by severity are used; excess signals are logged but not scored.
+MAX_SIGNALS_PER_THEME = 8
+
 def score_theme(theme_signals: list) -> dict:
     """
     Computes convergence score for a single theme's signal list.
+    Caps signals at MAX_SIGNALS_PER_THEME before scoring — highest severity first.
     Returns scoring breakdown dict.
     """
     if not theme_signals:
         return {"score": 0.0, "distinct_tool_count": 0,
-                "max_severity": 0, "signal_count": 0, "modifier": 1.0}
+                "max_severity": 0, "signal_count": 0, "modifier": 1.0,
+                "raw_signal_count": 0}
 
-    distinct_tools = list({s["source_tool"] for s in theme_signals})
+    raw_count = len(theme_signals)
+
+    # Cap signals — sort by severity descending, take top MAX_SIGNALS_PER_THEME
+    capped_signals = sorted(theme_signals, key=lambda s: s["severity"], reverse=True)
+    capped_signals = capped_signals[:MAX_SIGNALS_PER_THEME]
+
+    distinct_tools = list({s["source_tool"] for s in capped_signals})
     distinct_tool_count = len(distinct_tools)
-    max_severity = max(s["severity"] for s in theme_signals)
-    signal_count = len(theme_signals)
+    max_severity = max(s["severity"] for s in capped_signals)
+    signal_count = len(capped_signals)
     modifier = signal_count_modifier(signal_count)
 
     score = distinct_tool_count * max_severity * modifier
@@ -71,6 +84,7 @@ def score_theme(theme_signals: list) -> dict:
         "max_severity": max_severity,
         "signal_count": signal_count,
         "modifier": modifier,
+        "raw_signal_count": raw_count,
     }
 
 
