@@ -230,17 +230,23 @@ def render_signal_observation(signal_observation: dict):
 
 # ── Watch Items ───────────────────────────────────────────────────────────────
 
-def render_watch_items(watch_items: list):
+def render_watch_items(watch_items: list, has_capped_findings: bool = False):
     if not watch_items:
         return
 
-    with st.expander(
-        f"Watch Items — {len(watch_items)} emerging pattern(s) below convergence threshold"
-    ):
-        st.caption(
-            "These themes have signal but do not meet the convergence threshold "
-            "(score ≥ 6, distinct tools ≥ 2). Scores shown for reference."
-        )
+    label = f"Watch Items — {len(watch_items)} pattern(s)"
+    with st.expander(label):
+        if has_capped_findings:
+            st.info(
+                "Some findings above the convergence threshold were moved here to keep the "
+                "primary output focused. If the top findings don't reflect your primary concern, "
+                "review the scores below — a high-scoring item here may be more relevant for your situation."
+            )
+        else:
+            st.caption(
+                "These themes have signal but do not yet meet the convergence threshold "
+                "(score ≥ 6, distinct tools ≥ 2). Scores shown for reference."
+            )
         for item in watch_items:
             si = item["score_info"]
             col1, col2, col3 = st.columns([3, 1, 2])
@@ -284,4 +290,13 @@ def render_full_output(reasoning_output: dict, findings: dict, tool_outputs: dic
     # Watch Items
     watch = findings.get("watch", [])
     if watch:
-        render_watch_items(watch)
+        # has_capped_findings is True when Watch contains items that scored above
+        # threshold but were deprioritized by the output cap
+        all_scores = findings.get("all_scores", {})
+        capped = any(
+            info["score"] >= 6 and info["distinct_tool_count"] >= 2
+            for item in watch
+            for theme, info in [(item["theme"], all_scores.get(item["theme"], {}))]
+            if info
+        )
+        render_watch_items(watch, has_capped_findings=capped)
