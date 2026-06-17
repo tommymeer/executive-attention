@@ -2,12 +2,18 @@
 claude_reasoning.py
 Executive Attention Synthesizer — Claude Reasoning Layer
 
-Single-pass Claude API call over signal bundles.
-Claude receives structured bundles — never raw tool output.
-Three structured tools: attention finding, decision finding, signal observation.
+Architecture:
+  - One Claude call per bundle (attention + decision findings)
+  - One Claude call for structural observation (JSON, no tool use)
+  - Deterministic layer owns structure; Claude owns language
+  - Fallback text if any call fails — cards always render
+
+Observation confidence is computed deterministically and passed to Claude.
+Claude writes the reason. Claude does not decide the level.
 """
 
 import os
+import json
 import anthropic
 from dotenv import load_dotenv
 
@@ -23,128 +29,47 @@ def get_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
-# ── Tool definitions ──────────────────────────────────────────────────────────
+# ── Observation confidence (deterministic) ────────────────────────────────────
 
-TOOLS = [
-    {
-        "name": "write_attention_finding",
-        "description": (
-            "Write a Requires Attention Now finding. "
-            "Names the specific convergence, what it implies, and what action it requires. "
-            "Never generic. Always specific to the signals provided."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "theme": {"type": "string", "description": "Canonical theme name"},
-                "theme_label": {"type": "string", "description": "Human-readable theme label"},
-                "synthesis": {
-                    "type": "string",
-                    "description": (
-                        "2-3 sentences. Names the specific cross-domain pattern. "
-                        "What each contributing signal shows. What they together imply. "
-                        "Calibrated to company type and stage."
-                    )
-                },
-                "required_action": {
-                    "type": "string",
-                    "description": (
-                        "1 sentence. The specific action this convergence requires. "
-                        "Not 'monitor'. A decision or intervention."
-                    )
-                },
-                "badge_sources": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of source tool names that contributed signals."
-                },
-            },
-            "required": ["theme", "theme_label", "synthesis", "required_action", "badge_sources"],
-        },
-    },
-    {
-        "name": "write_decision_finding",
-        "description": (
-            "Write a Decision Cannot Be Postponed finding. "
-            "Same as attention finding, but with explicit deadline naming "
-            "and consequence of deferral."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "theme": {"type": "string"},
-                "theme_label": {"type": "string"},
-                "synthesis": {
-                    "type": "string",
-                    "description": (
-                        "2-3 sentences. Names the convergence and time constraint. "
-                        "What is converging and when it becomes irreversible."
-                    )
-                },
-                "decision_required": {
-                    "type": "string",
-                    "description": "The specific decision that must be made. Not a monitoring task."
-                },
-                "deadline_reference": {
-                    "type": "string",
-                    "description": "The named date or window from the signals. Verbatim if possible."
-                },
-                "consequence_of_deferral": {
-                    "type": "string",
-                    "description": "1 sentence. What changes — and cannot be recovered — if this is deferred."
-                },
-                "badge_sources": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-            },
-            "required": [
-                "theme", "theme_label", "synthesis", "decision_required",
-                "deadline_reference", "consequence_of_deferral", "badge_sources"
-            ],
-        },
-    },
-    {
-        "name": "write_signal_observation",
-        "description": (
-            "Write the What the Signals Suggest structural hypothesis. "
-            "THREE named components required: observed_pattern, likely_implicit_belief, alternative_explanation. "
-            "Not a summary. Surfaces what the organization appears to believe vs. "
-            "what the convergent signals suggest is actually true. "
-            "This tool MUST be called exactly once in every response."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "observed_pattern": {
-                    "type": "string",
-                    "description": (
-                        "What the signals show is happening across organizational domains. "
-                        "Stated as observable fact, not interpretation. "
-                        "Name the specific domains and what each shows."
-                    )
-                },
-                "likely_implicit_belief": {
-                    "type": "string",
-                    "description": (
-                        "What the organization appears to be assuming is true, "
-                        "based on where attention and resources are concentrated. "
-                        "Framed as 'Leadership appears to be operating as though...'"
-                    )
-                },
-                "alternative_explanation": {
-                    "type": "string",
-                    "description": (
-                        "A plausible reframe the data supports. "
-                        "Not a correction — a hypothesis. "
-                        "Framed as 'An alternative explanation is...' or 'The data is also consistent with...'"
-                    )
-                },
-            },
-            "required": ["observed_pattern", "likely_implicit_belief", "alternative_explanation"],
-        },
-    },
-]
+def compute_observation_confidence(top_themes: list) -> tuple:
+    """
+    Computes confidence level for the structural observation.
+    Based on distinct tool count across top convergent themes.
+    Returns (level, reason) — Claude receives both and writes the display reason.
+    """
+    if not top_themes:
+        return "Low", "No convergent themes available for structural observation."
+
+    max_tools = max(
+        item["score_info"]["distinct_tool_count"]
+        for item in top_themes
+    )
+    total_signals = sum(
+        item["score_info"]["signal_count"]
+        for item in top_themes
+    )
+    theme_count = len(top_themes)
+
+    if max_tools >= 3:
+        level = "High"
+        reason = (
+            f"{theme_count} convergent theme(s) with signal from "
+            f"{max_tools} distinct organizational domains."
+        )
+    elif max_tools == 2:
+        level = "Medium"
+        reason = (
+            f"Convergence detected across 2 organizational domains. "
+            f"Additional signal inputs may sharpen or revise this observation."
+        )
+    else:
+        level = "Low"
+        reason = (
+            f"Observation generated from a single organizational domain. "
+            f"Cross-domain corroboration is absent — treat as directional only."
+        )
+
+    return level, reason
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
@@ -159,7 +84,8 @@ def build_system_prompt(business_context: dict) -> str:
         company_framing = (
             "This is a consumer business. Frame findings in language relevant to "
             "consumer metrics: activation, retention, cohort behavior, product engagement, "
-            "acquisition efficiency. Avoid enterprise procurement framing unless directly present in signals."
+            "acquisition efficiency. Avoid enterprise procurement framing unless directly "
+            "present in signals."
         )
     elif company_type == "Enterprise / B2B":
         company_framing = (
@@ -199,145 +125,172 @@ def build_system_prompt(business_context: dict) -> str:
     optional_section = ""
     if optional_context:
         optional_section = f"""
-ADDITIONAL BUSINESS CONTEXT PROVIDED BY USER:
+ADDITIONAL BUSINESS CONTEXT:
 {optional_context}
 
-Use this as an interpretive anchor where relevant. If convergent signals connect to 
-this context, make that connection explicit. Do not fabricate signals from this context.
+Use this as an interpretive anchor where relevant. Do not fabricate signals from it.
 """
 
-    return f"""You are analyzing convergent organizational signals for the Executive Attention Synthesizer.
+    return f"""You are writing narrative for the Executive Attention Synthesizer.
 
-You receive structured signal bundles — preprocessed, scored, and classified by a deterministic convergence engine. 
-Your job is translation and structural observation, not classification or scoring.
+The structure of every finding has already been determined by a deterministic convergence engine.
+Your only job is to write the language that explains what each convergence means.
 
 WHAT YOU ARE NOT DOING:
-- Do not re-classify findings. Classification has already been done deterministically.
-- Do not invent signals not present in the bundles.
-- Do not produce generic risk language ("leadership should monitor this area").
-- Do not summarize what each tool found separately — synthesize across them.
-
-WHAT YOU ARE DOING:
-- For Requires Attention Now findings: name the specific cross-domain pattern, what it implies, and what action it requires.
-- For Decision Cannot Be Postponed findings: name the convergence, the specific decision, the deadline, and what deferral costs.
-- For What the Signals Suggest: produce the three-part structural hypothesis. Surface the tension between what the organization appears to believe and what the signals suggest is true.
-
-REQUIRED TOOL CALLS:
-- Call write_attention_finding once for each Requires Attention Now bundle provided.
-- Call write_decision_finding once for each Decision Cannot Be Postponed bundle provided.
-- Call write_signal_observation EXACTLY ONCE. This is mandatory. Do not skip it. It must be the last tool call you make.
+- Do not decide what is important. That has already been decided.
+- Do not invent signals not present in the bundle.
+- Do not produce generic language ("leadership should monitor this").
+- Do not summarize each tool separately — synthesize across them.
 
 SPECIFICITY REQUIREMENTS:
-- Every finding must name the specific theme and the specific signals supporting it.
-- Every action or decision must be specific — not "monitor" or "discuss."
-- Quantify where the signals provide numbers.
-- Attribution is deterministic — badge sources come from the bundle, not from your judgment.
-
-ABSENCE AS EVIDENCE:
-- If a theme scores high but a key organizational domain is absent from contributing signals, note the gap.
-
-HYPOTHESIS FRAMING:
-- What the Signals Suggest is not a summary. It is a structural observation.
-- The alternative explanation is a plausible reframe, not a correction. Frame as hypothesis.
-- If no genuine tension is visible in the bundles, say so rather than manufacturing one.
+- Name the specific theme and the specific signals supporting it.
+- Every action or decision must be concrete — not "monitor" or "discuss."
+- Quantify where signals provide numbers.
+- Badge sources are already determined — do not reassign them.
 
 {company_framing}
-
 {stage_framing}
-
 {optional_section}"""
 
 
-# ── User prompt builder ───────────────────────────────────────────────────────
+# ── Per-bundle prompts ────────────────────────────────────────────────────────
 
-def build_user_prompt(findings: dict) -> str:
-    sections = []
+def build_attention_prompt(bundle: str) -> str:
+    return f"""Write the narrative for this Requires Attention Now finding.
 
-    if findings.get("requires_attention"):
-        sections.append("=== REQUIRES ATTENTION NOW — Signal Bundles ===\n")
-        for item in findings["requires_attention"]:
-            sections.append(item.get("bundle", ""))
-            sections.append("")
+{bundle}
 
-    if findings.get("cannot_postpone"):
-        sections.append("=== DECISION CANNOT BE POSTPONED — Signal Bundles ===\n")
-        for item in findings["cannot_postpone"]:
-            sections.append(item.get("bundle", ""))
-            sections.append("")
+Return JSON only. No preamble, no explanation, no markdown fences.
+Exact format:
+{{
+  "synthesis": "2-3 sentences. Names the cross-domain pattern, what each signal shows, what they together imply.",
+  "required_action": "1 sentence. Specific action required. Not monitor. A decision or intervention."
+}}"""
 
-    if findings.get("top_for_observation"):
-        sections.append("=== WHAT THE SIGNALS SUGGEST — Top Convergent Bundles ===\n")
-        sections.append(
-            "Use these bundles to produce the three-part structural hypothesis. "
-            "Do not summarize — identify the tension between implicit belief and signal reality.\n"
-        )
-        for item in findings["top_for_observation"]:
-            sections.append(item.get("bundle", ""))
-            sections.append("")
 
-    sections.append(
-        "\n=== REQUIRED FINAL STEP ===\n"
-        "You MUST call write_signal_observation exactly once as your final tool call. "
-        "Do not finish without calling it. "
-        "Surface the three-part hypothesis based on the convergent patterns above."
+def build_decision_prompt(bundle: str) -> str:
+    return f"""Write the narrative for this Decision Cannot Be Postponed finding.
+
+{bundle}
+
+Return JSON only. No preamble, no explanation, no markdown fences.
+Exact format:
+{{
+  "synthesis": "2-3 sentences. Names the convergence and time constraint. What is converging and when it becomes irreversible.",
+  "decision_required": "The specific decision that must be made. Not a monitoring task.",
+  "deadline_reference": "The named date or window from the signals. Verbatim where possible.",
+  "consequence_of_deferral": "1 sentence. What changes and cannot be recovered if this is deferred."
+}}"""
+
+
+def build_observation_prompt(top_themes: list, confidence_level: str,
+                              confidence_reason: str) -> str:
+    bundle_text = "\n\n".join(
+        item.get("bundle", "") for item in top_themes
     )
+    return f"""Produce the structural observation for What the Signals Suggest.
 
-    if not sections:
-        return (
-            "No convergent themes were detected above the threshold in the provided signals. "
-            "Call write_signal_observation with an observed_pattern noting the absence of "
-            "convergent findings, and suggest what additional signal inputs might surface patterns."
+This is not a summary of findings. Identify the tension between:
+- What the organization appears to believe is true (based on where attention and resources are concentrated)
+- What the convergent signals suggest is actually true
+
+The observation confidence has been computed deterministically:
+Confidence: {confidence_level}
+Reason: {confidence_reason}
+
+Signal bundles:
+{bundle_text}
+
+Return JSON only. No preamble, no explanation, no markdown fences.
+Exact format:
+{{
+  "observed_pattern": "What the signals show is happening across organizational domains. Observable fact, not interpretation. Name specific domains.",
+  "likely_implicit_belief": "What the organization appears to be assuming is true. Start with: Leadership appears to be operating as though...",
+  "alternative_explanation": "A plausible reframe the data supports. Not a correction — a hypothesis. Start with: An alternative explanation is... or The data is also consistent with..."
+}}"""
+
+
+# ── Claude call with fallback ─────────────────────────────────────────────────
+
+def call_claude_json(client, system_prompt: str, user_prompt: str,
+                     max_tokens: int = 1000) -> dict | None:
+    """
+    Single Claude call expecting JSON response.
+    Returns parsed dict or None on failure.
+    """
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
         )
+        text = response.content[0].text.strip()
+        # Strip markdown fences if present despite instructions
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text.strip())
+    except Exception:
+        return None
 
-    return "\n".join(sections)
 
+# ── Fallback text builders ────────────────────────────────────────────────────
 
-# ── Response parser ───────────────────────────────────────────────────────────
-
-def parse_tool_calls(response) -> dict:
-    """Extract structured outputs from Claude's tool use response."""
-    attention_findings = []
-    decision_findings = []
-    signal_observation = None
-
-    for block in response.content:
-        if block.type != "tool_use":
-            continue
-
-        name = block.name
-        inp = block.input
-
-        if name == "write_attention_finding":
-            attention_findings.append({
-                "theme": inp.get("theme", ""),
-                "theme_label": inp.get("theme_label", ""),
-                "synthesis": inp.get("synthesis", ""),
-                "required_action": inp.get("required_action", ""),
-                "badge_sources": inp.get("badge_sources", []),
-            })
-
-        elif name == "write_decision_finding":
-            decision_findings.append({
-                "theme": inp.get("theme", ""),
-                "theme_label": inp.get("theme_label", ""),
-                "synthesis": inp.get("synthesis", ""),
-                "decision_required": inp.get("decision_required", ""),
-                "deadline_reference": inp.get("deadline_reference", ""),
-                "consequence_of_deferral": inp.get("consequence_of_deferral", ""),
-                "badge_sources": inp.get("badge_sources", []),
-            })
-
-        elif name == "write_signal_observation":
-            signal_observation = {
-                "observed_pattern": inp.get("observed_pattern", ""),
-                "likely_implicit_belief": inp.get("likely_implicit_belief", ""),
-                "alternative_explanation": inp.get("alternative_explanation", ""),
-            }
-
+def attention_fallback(item: dict) -> dict:
+    signals = item.get("signals", [])
+    signal_text = " · ".join(s["text"][:80] for s in signals[:3])
     return {
-        "attention_findings": attention_findings,
-        "decision_findings": decision_findings,
-        "signal_observation": signal_observation,
+        "synthesis": (
+            f"Multiple organizational domains are signaling a convergence on "
+            f"{item['theme_label']}. Contributing signals: {signal_text}"
+        ),
+        "required_action": (
+            f"Review the {item['theme_label']} signals across "
+            f"{', '.join(item['score_info']['distinct_tools'])} and determine the required intervention."
+        ),
+    }
+
+
+def decision_fallback(item: dict) -> dict:
+    signals = item.get("signals", [])
+    signal_text = " · ".join(s["text"][:80] for s in signals[:3])
+    time_ref = item.get("time_reference", "near term")
+    return {
+        "synthesis": (
+            f"Convergent signals across {len(item['score_info']['distinct_tools'])} "
+            f"organizational domains point to {item['theme_label']} with time pressure: {time_ref}. "
+            f"Contributing signals: {signal_text}"
+        ),
+        "decision_required": f"Make an explicit decision on {item['theme_label']} before {time_ref}.",
+        "deadline_reference": time_ref,
+        "consequence_of_deferral": (
+            f"Continued deferral on {item['theme_label']} increases risk as the "
+            f"{time_ref} constraint approaches."
+        ),
+    }
+
+
+def observation_fallback(top_themes: list, confidence_level: str,
+                          confidence_reason: str) -> dict:
+    themes = ", ".join(item["theme_label"] for item in top_themes)
+    tools = set()
+    for item in top_themes:
+        tools.update(item["score_info"].get("distinct_tools", []))
+    return {
+        "observed_pattern": (
+            f"Convergent signals detected across {themes}. "
+            f"Contributing domains: {', '.join(sorted(tools))}."
+        ),
+        "likely_implicit_belief": (
+            "Leadership appears to be operating as though these organizational signals "
+            "are independent. The convergence pattern suggests they share a common root."
+        ),
+        "alternative_explanation": (
+            "The data is also consistent with a single underlying constraint "
+            "manifesting across multiple organizational systems simultaneously."
+        ),
     }
 
 
@@ -345,24 +298,90 @@ def parse_tool_calls(response) -> dict:
 
 def run_reasoning(findings: dict, business_context: dict) -> dict:
     """
-    Main entry point for the Claude reasoning layer.
-    Takes classified and bundled findings + business context.
-    Returns parsed structured output.
+    Main entry point.
+
+    For each attention bundle: one Claude call → synthesis + required_action
+    For each decision bundle: one Claude call → synthesis + decision fields
+    For observation: one Claude call → three-part hypothesis + confidence
+
+    Fallback text renders if any call fails.
+    Cards always exist. Claude only fills language.
     """
     client = get_client()
-
     system_prompt = build_system_prompt(business_context)
-    user_prompt = build_user_prompt(findings)
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=6000,
-        system=system_prompt,
-        tools=TOOLS,
-        tool_choice={"type": "any"},
-        messages=[
-            {"role": "user", "content": user_prompt}
-        ],
+    # ── Attention findings — one call per bundle ──────────────────────────────
+    attention_findings = []
+    for item in findings.get("requires_attention", []):
+        bundle = item.get("bundle", "")
+        result = call_claude_json(
+            client, system_prompt,
+            build_attention_prompt(bundle),
+            max_tokens=800,
+        )
+        if not result:
+            result = attention_fallback(item)
+
+        attention_findings.append({
+            "theme": item["theme"],
+            "theme_label": item["theme_label"],
+            "synthesis": result.get("synthesis", ""),
+            "required_action": result.get("required_action", ""),
+            "badge_sources": sorted(set(
+                s["source_tool"] for s in item.get("signals", [])
+            )),
+            "score": item["score"],
+            "score_info": item["score_info"],
+        })
+
+    # ── Decision findings — one call per bundle ───────────────────────────────
+    decision_findings = []
+    for item in findings.get("cannot_postpone", []):
+        bundle = item.get("bundle", "")
+        result = call_claude_json(
+            client, system_prompt,
+            build_decision_prompt(bundle),
+            max_tokens=800,
+        )
+        if not result:
+            result = decision_fallback(item)
+
+        decision_findings.append({
+            "theme": item["theme"],
+            "theme_label": item["theme_label"],
+            "synthesis": result.get("synthesis", ""),
+            "decision_required": result.get("decision_required", ""),
+            "deadline_reference": result.get("deadline_reference", ""),
+            "consequence_of_deferral": result.get("consequence_of_deferral", ""),
+            "badge_sources": sorted(set(
+                s["source_tool"] for s in item.get("signals", [])
+            )),
+            "score": item["score"],
+            "score_info": item["score_info"],
+        })
+
+    # ── Structural observation — one call, confidence deterministic ───────────
+    top_themes = findings.get("top_for_observation", [])
+    confidence_level, confidence_reason = compute_observation_confidence(top_themes)
+
+    obs_result = call_claude_json(
+        client, system_prompt,
+        build_observation_prompt(top_themes, confidence_level, confidence_reason),
+        max_tokens=1000,
     )
+    if not obs_result:
+        obs_result = observation_fallback(top_themes, confidence_level, confidence_reason)
 
-    return parse_tool_calls(response)
+    signal_observation = {
+        "observed_pattern": obs_result.get("observed_pattern", ""),
+        "likely_implicit_belief": obs_result.get("likely_implicit_belief", ""),
+        "alternative_explanation": obs_result.get("alternative_explanation", ""),
+        "confidence_level": confidence_level,
+        "confidence_reason": confidence_reason,
+    }
+
+    return {
+        "attention_findings": attention_findings,
+        "decision_findings": decision_findings,
+        "signal_observation": signal_observation,
+    }
