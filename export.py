@@ -88,14 +88,14 @@ def build_export(business_context: dict, tool_outputs: dict,
     if observation:
         lines += ["=" * 60, "WHAT THE SIGNALS SUGGEST", "=" * 60, ""]
         lines += [
-            "Observed Pattern:",
-            observation.get("observed_pattern", ""),
+            "Primary Hypothesis:",
+            observation.get("primary_hypothesis", ""),
             "",
-            "Likely Implicit Belief:",
-            observation.get("likely_implicit_belief", ""),
+            "Competing Hypothesis:",
+            observation.get("competing_hypothesis", ""),
             "",
-            "Alternative Explanation:",
-            observation.get("alternative_explanation", ""),
+            "Unresolved Ambiguity:",
+            observation.get("unresolved_ambiguity", ""),
             "",
         ]
 
