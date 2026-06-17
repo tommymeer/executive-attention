@@ -195,34 +195,34 @@ def render_signal_observation(signal_observation: dict):
         unsafe_allow_html=True,
     )
 
-    observed = signal_observation.get("observed_pattern", "")
-    belief = signal_observation.get("likely_implicit_belief", "")
-    alternative = signal_observation.get("alternative_explanation", "")
+    primary = signal_observation.get("primary_hypothesis", "")
+    competing = signal_observation.get("competing_hypothesis", "")
+    ambiguity = signal_observation.get("unresolved_ambiguity", "")
 
-    if observed:
-        st.markdown("**Observed Pattern**")
-        st.markdown(escape_dollars(observed))
+    if primary:
+        st.markdown("**Primary Hypothesis**")
+        st.markdown(escape_dollars(primary))
         st.markdown("")
 
-    if belief:
-        st.markdown("**Likely Implicit Belief**")
+    if competing:
+        st.markdown("**Competing Hypothesis**")
         st.markdown(
             f"<div style='color:#374151; font-style:italic'>"
-            f"{escape_dollars(belief)}</div>",
+            f"{escape_dollars(competing)}</div>",
             unsafe_allow_html=True,
         )
         st.markdown("")
 
-    if alternative:
-        st.markdown("**Alternative Explanation**")
+    if ambiguity:
+        st.markdown("**Unresolved Ambiguity**")
         st.markdown(
             f"<div style='background:#eff6ff; padding:12px; border-radius:6px; "
             f"border-left:3px solid #3b82f6; font-size:13px'>"
-            f"{escape_dollars(alternative)}</div>",
+            f"{escape_dollars(ambiguity)}</div>",
             unsafe_allow_html=True,
         )
 
-    if not any([observed, belief, alternative]):
+    if not any([primary, competing, ambiguity]):
         st.caption("_Observation generation failed — insufficient signal for structural hypothesis._")
 
     st.markdown("</div>", unsafe_allow_html=True)
