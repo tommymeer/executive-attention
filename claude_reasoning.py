@@ -186,9 +186,9 @@ def build_observation_prompt(top_themes: list, confidence_level: str,
     )
     return f"""Produce the structural observation for What the Signals Suggest.
 
-This is not a summary. Identify the tension between:
-- What the organization appears to believe is true
-- What the convergent signals suggest is actually true
+This is not a summary. Identify what the cross-domain convergence most strongly implies,
+what alternative explanation could account for the same signals, and what remains
+unresolvable without additional data.
 
 Observation confidence (computed deterministically): {confidence_level}
 Reason: {confidence_reason}
@@ -198,9 +198,9 @@ Signal bundles:
 
 Return JSON only. No preamble, no explanation, no markdown fences.
 {{
-  "observed_pattern": "What the signals show is happening across organizational domains. Observable fact. Name specific domains and what each shows.",
-  "likely_implicit_belief": "What the organization appears to be assuming is true. Start with: Leadership appears to be operating as though...",
-  "alternative_explanation": "A plausible reframe the data supports. Not a correction. Start with: An alternative explanation is... or The data is also consistent with..."
+  "primary_hypothesis": "The explanation most supported by cross-domain convergence. Strictly tied to the highest-scoring signals. No narrative — just what the data most strongly implies. May include compound causality if convergence indicates multiple linked drivers. Do not force single-cause explanations.",
+  "competing_hypothesis": "A plausible alternative explanation for the same signals. Must explain the same convergent pattern differently, not introduce new data.",
+  "unresolved_ambiguity": "What cannot be determined from the signals available. Name specifically what data or signal would change the interpretation — and which hypothesis it would support. If no such data exists, explicitly state that the ambiguity is structural (not data-limited)."
 }}"""
 
 
@@ -268,17 +268,20 @@ def observation_fallback(top_themes: list, confidence_level: str,
     for item in top_themes:
         tools.update(item["score_info"].get("distinct_tools", []))
     return {
-        "observed_pattern": (
-            f"Convergent signals detected across {themes}. "
-            f"Contributing domains: {', '.join(sorted(tools))}."
+        "primary_hypothesis": (
+            f"Convergent signals across {themes} and {', '.join(sorted(tools))} "
+            f"point to a shared underlying constraint. The cross-domain pattern "
+            f"suggests these are not independent issues."
         ),
-        "likely_implicit_belief": (
-            "Leadership appears to be operating as though these organizational signals "
-            "are independent. The convergence pattern suggests they share a common root."
+        "competing_hypothesis": (
+            "The same signals could reflect independent execution failures across "
+            "domains rather than a single root cause — coincident pressure rather "
+            "than structural convergence."
         ),
-        "alternative_explanation": (
-            "The data is also consistent with a single underlying constraint "
-            "manifesting across multiple organizational systems simultaneously."
+        "unresolved_ambiguity": (
+            "Insufficient signal to distinguish root-cause convergence from "
+            "correlated-but-independent failures. Additional data from missing "
+            "organizational domains would clarify which hypothesis holds."
         ),
     }
 
@@ -410,9 +413,9 @@ def run_reasoning(findings: dict, business_context: dict) -> dict:
         obs_result = observation_fallback(top_themes, confidence_level, confidence_reason)
 
     signal_observation = {
-        "observed_pattern": obs_result.get("observed_pattern", ""),
-        "likely_implicit_belief": obs_result.get("likely_implicit_belief", ""),
-        "alternative_explanation": obs_result.get("alternative_explanation", ""),
+        "primary_hypothesis": obs_result.get("primary_hypothesis", ""),
+        "competing_hypothesis": obs_result.get("competing_hypothesis", ""),
+        "unresolved_ambiguity": obs_result.get("unresolved_ambiguity", ""),
         "confidence_level": confidence_level,
         "confidence_reason": confidence_reason,
     }
