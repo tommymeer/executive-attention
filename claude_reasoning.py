@@ -3,18 +3,20 @@ claude_reasoning.py
 Executive Attention Synthesizer — Claude Reasoning Layer
 
 Architecture:
-  - One Claude call per bundle (attention + decision findings)
-  - One Claude call for structural observation (JSON, no tool use)
+  - Attention + decision bundle calls run concurrently (ThreadPoolExecutor)
+  - Observation call runs after, sequentially (needs full convergence picture)
+  - All calls return plain JSON — no tool use
   - Deterministic layer owns structure; Claude owns language
   - Fallback text if any call fails — cards always render
 
-Observation confidence is computed deterministically and passed to Claude.
+Observation confidence is computed deterministically.
 Claude writes the reason. Claude does not decide the level.
 """
 
 import os
 import json
 import anthropic
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,10 +46,6 @@ def compute_observation_confidence(top_themes: list) -> tuple:
         item["score_info"]["distinct_tool_count"]
         for item in top_themes
     )
-    total_signals = sum(
-        item["score_info"]["signal_count"]
-        for item in top_themes
-    )
     theme_count = len(top_themes)
 
     if max_tools >= 3:
@@ -59,14 +57,14 @@ def compute_observation_confidence(top_themes: list) -> tuple:
     elif max_tools == 2:
         level = "Medium"
         reason = (
-            f"Convergence detected across 2 organizational domains. "
-            f"Additional signal inputs may sharpen or revise this observation."
+            "Convergence detected across 2 organizational domains. "
+            "Additional signal inputs may sharpen or revise this observation."
         )
     else:
         level = "Low"
         reason = (
-            f"Observation generated from a single organizational domain. "
-            f"Cross-domain corroboration is absent — treat as directional only."
+            "Observation generated from a single organizational domain. "
+            "Cross-domain corroboration is absent — treat as directional only."
         )
 
     return level, reason
@@ -146,7 +144,7 @@ SPECIFICITY REQUIREMENTS:
 - Name the specific theme and the specific signals supporting it.
 - Every action or decision must be concrete — not "monitor" or "discuss."
 - Quantify where signals provide numbers.
-- Badge sources are already determined — do not reassign them.
+- Be concise. Synthesis: 2-3 sentences. Required action: 1 sentence.
 
 {company_framing}
 {stage_framing}
@@ -161,9 +159,8 @@ def build_attention_prompt(bundle: str) -> str:
 {bundle}
 
 Return JSON only. No preamble, no explanation, no markdown fences.
-Exact format:
 {{
-  "synthesis": "2-3 sentences. Names the cross-domain pattern, what each signal shows, what they together imply.",
+  "synthesis": "2-3 sentences max. The cross-domain pattern, what it implies, what is at stake.",
   "required_action": "1 sentence. Specific action required. Not monitor. A decision or intervention."
 }}"""
 
@@ -174,12 +171,11 @@ def build_decision_prompt(bundle: str) -> str:
 {bundle}
 
 Return JSON only. No preamble, no explanation, no markdown fences.
-Exact format:
 {{
-  "synthesis": "2-3 sentences. Names the convergence and time constraint. What is converging and when it becomes irreversible.",
+  "synthesis": "2-3 sentences max. The convergence and time constraint. What is converging and when it becomes irreversible.",
   "decision_required": "The specific decision that must be made. Not a monitoring task.",
   "deadline_reference": "The named date or window from the signals. Verbatim where possible.",
-  "consequence_of_deferral": "1 sentence. What changes and cannot be recovered if this is deferred."
+  "consequence_of_deferral": "1 sentence. What changes and cannot be recovered if deferred."
 }}"""
 
 
@@ -190,34 +186,29 @@ def build_observation_prompt(top_themes: list, confidence_level: str,
     )
     return f"""Produce the structural observation for What the Signals Suggest.
 
-This is not a summary of findings. Identify the tension between:
-- What the organization appears to believe is true (based on where attention and resources are concentrated)
+This is not a summary. Identify the tension between:
+- What the organization appears to believe is true
 - What the convergent signals suggest is actually true
 
-The observation confidence has been computed deterministically:
-Confidence: {confidence_level}
+Observation confidence (computed deterministically): {confidence_level}
 Reason: {confidence_reason}
 
 Signal bundles:
 {bundle_text}
 
 Return JSON only. No preamble, no explanation, no markdown fences.
-Exact format:
 {{
-  "observed_pattern": "What the signals show is happening across organizational domains. Observable fact, not interpretation. Name specific domains.",
+  "observed_pattern": "What the signals show is happening across organizational domains. Observable fact. Name specific domains and what each shows.",
   "likely_implicit_belief": "What the organization appears to be assuming is true. Start with: Leadership appears to be operating as though...",
-  "alternative_explanation": "A plausible reframe the data supports. Not a correction — a hypothesis. Start with: An alternative explanation is... or The data is also consistent with..."
+  "alternative_explanation": "A plausible reframe the data supports. Not a correction. Start with: An alternative explanation is... or The data is also consistent with..."
 }}"""
 
 
 # ── Claude call with fallback ─────────────────────────────────────────────────
 
 def call_claude_json(client, system_prompt: str, user_prompt: str,
-                     max_tokens: int = 1000) -> dict | None:
-    """
-    Single Claude call expecting JSON response.
-    Returns parsed dict or None on failure.
-    """
+                     max_tokens: int = 800) -> dict | None:
+    """Single Claude call expecting JSON. Returns parsed dict or None on failure."""
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -226,7 +217,6 @@ def call_claude_json(client, system_prompt: str, user_prompt: str,
             messages=[{"role": "user", "content": user_prompt}],
         )
         text = response.content[0].text.strip()
-        # Strip markdown fences if present despite instructions
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -241,14 +231,14 @@ def call_claude_json(client, system_prompt: str, user_prompt: str,
 def attention_fallback(item: dict) -> dict:
     signals = item.get("signals", [])
     signal_text = " · ".join(s["text"][:80] for s in signals[:3])
+    tools = item["score_info"]["distinct_tools"]
     return {
         "synthesis": (
-            f"Multiple organizational domains are signaling a convergence on "
+            f"Convergent signals across {', '.join(tools)} point to "
             f"{item['theme_label']}. Contributing signals: {signal_text}"
         ),
         "required_action": (
-            f"Review the {item['theme_label']} signals across "
-            f"{', '.join(item['score_info']['distinct_tools'])} and determine the required intervention."
+            f"Review {item['theme_label']} signals and determine required intervention."
         ),
     }
 
@@ -259,15 +249,14 @@ def decision_fallback(item: dict) -> dict:
     time_ref = item.get("time_reference", "near term")
     return {
         "synthesis": (
-            f"Convergent signals across {len(item['score_info']['distinct_tools'])} "
-            f"organizational domains point to {item['theme_label']} with time pressure: {time_ref}. "
-            f"Contributing signals: {signal_text}"
+            f"Convergent signals across {item['score_info']['distinct_tool_count']} "
+            f"domains point to {item['theme_label']} with time pressure: {time_ref}. "
+            f"Signals: {signal_text}"
         ),
         "decision_required": f"Make an explicit decision on {item['theme_label']} before {time_ref}.",
         "deadline_reference": time_ref,
         "consequence_of_deferral": (
-            f"Continued deferral on {item['theme_label']} increases risk as the "
-            f"{time_ref} constraint approaches."
+            f"Continued deferral on {item['theme_label']} compounds risk as the deadline approaches."
         ),
     }
 
@@ -294,15 +283,40 @@ def observation_fallback(top_themes: list, confidence_level: str,
     }
 
 
+# ── Concurrent bundle processor ───────────────────────────────────────────────
+
+def process_bundle(args: tuple) -> tuple:
+    """
+    Worker function for ThreadPoolExecutor.
+    Returns (index, finding_type, result_dict).
+    """
+    idx, finding_type, item, system_prompt, client = args
+    bundle = item.get("bundle", "")
+
+    if finding_type == "attention":
+        result = call_claude_json(client, system_prompt,
+                                  build_attention_prompt(bundle), max_tokens=600)
+        if not result:
+            result = attention_fallback(item)
+        return (idx, "attention", item, result)
+
+    elif finding_type == "decision":
+        result = call_claude_json(client, system_prompt,
+                                  build_decision_prompt(bundle), max_tokens=600)
+        if not result:
+            result = decision_fallback(item)
+        return (idx, "decision", item, result)
+
+
 # ── Master reasoning runner ───────────────────────────────────────────────────
 
 def run_reasoning(findings: dict, business_context: dict) -> dict:
     """
-    Main entry point.
+    Concurrent Claude calls for all bundle findings.
+    Sequential observation call after.
 
-    For each attention bundle: one Claude call → synthesis + required_action
-    For each decision bundle: one Claude call → synthesis + decision fields
-    For observation: one Claude call → three-part hypothesis + confidence
+    Pass 1 (concurrent): all attention + decision bundles run in parallel.
+    Pass 2 (sequential): structural observation, forced after pass 1 completes.
 
     Fallback text renders if any call fails.
     Cards always exist. Claude only fills language.
@@ -310,16 +324,42 @@ def run_reasoning(findings: dict, business_context: dict) -> dict:
     client = get_client()
     system_prompt = build_system_prompt(business_context)
 
-    # ── Attention findings — one call per bundle ──────────────────────────────
+    attention_items = findings.get("requires_attention", [])
+    decision_items = findings.get("cannot_postpone", [])
+
+    # Build work queue — (index, type, item, system_prompt, client)
+    work = []
+    for i, item in enumerate(attention_items):
+        work.append((i, "attention", item, system_prompt, client))
+    for i, item in enumerate(decision_items):
+        work.append((i, "decision", item, system_prompt, client))
+
+    # ── Pass 1: Concurrent bundle calls ──────────────────────────────────────
+    attention_results = [None] * len(attention_items)
+    decision_results = [None] * len(decision_items)
+
+    max_workers = min(len(work), 6)  # cap at 6 concurrent calls
+
+    if work:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_bundle, w): w for w in work}
+            for future in as_completed(futures):
+                try:
+                    idx, finding_type, item, result = future.result()
+                    if finding_type == "attention":
+                        attention_results[idx] = (item, result)
+                    elif finding_type == "decision":
+                        decision_results[idx] = (item, result)
+                except Exception:
+                    pass  # fallback text will render for failed items
+
+    # Build attention findings list
     attention_findings = []
-    for item in findings.get("requires_attention", []):
-        bundle = item.get("bundle", "")
-        result = call_claude_json(
-            client, system_prompt,
-            build_attention_prompt(bundle),
-            max_tokens=800,
-        )
-        if not result:
+    for i, item in enumerate(attention_items):
+        pair = attention_results[i]
+        if pair:
+            original_item, result = pair
+        else:
             result = attention_fallback(item)
 
         attention_findings.append({
@@ -334,16 +374,13 @@ def run_reasoning(findings: dict, business_context: dict) -> dict:
             "score_info": item["score_info"],
         })
 
-    # ── Decision findings — one call per bundle ───────────────────────────────
+    # Build decision findings list
     decision_findings = []
-    for item in findings.get("cannot_postpone", []):
-        bundle = item.get("bundle", "")
-        result = call_claude_json(
-            client, system_prompt,
-            build_decision_prompt(bundle),
-            max_tokens=800,
-        )
-        if not result:
+    for i, item in enumerate(decision_items):
+        pair = decision_results[i]
+        if pair:
+            original_item, result = pair
+        else:
             result = decision_fallback(item)
 
         decision_findings.append({
@@ -360,14 +397,14 @@ def run_reasoning(findings: dict, business_context: dict) -> dict:
             "score_info": item["score_info"],
         })
 
-    # ── Structural observation — one call, confidence deterministic ───────────
+    # ── Pass 2: Observation (sequential, after pass 1 completes) ─────────────
     top_themes = findings.get("top_for_observation", [])
     confidence_level, confidence_reason = compute_observation_confidence(top_themes)
 
     obs_result = call_claude_json(
         client, system_prompt,
         build_observation_prompt(top_themes, confidence_level, confidence_reason),
-        max_tokens=1000,
+        max_tokens=800,
     )
     if not obs_result:
         obs_result = observation_fallback(top_themes, confidence_level, confidence_reason)
