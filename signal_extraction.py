@@ -106,31 +106,44 @@ def extract_relevant_lines(text: str, section_markers: list,
 
     A line is treated as a section header only if it BOTH:
     1. Contains a section marker keyword
-    2. Looks structurally like a header (markdown #, short title, ALL CAPS)
+    2. Looks structurally like a header
 
-    This prevents content lines that happen to contain keywords
-    (e.g. "Meridian Health stalled in procurement") from being
-    misidentified as section headers, which was swallowing all content.
+    Header patterns recognized:
+    - ## Markdown headers
+    - ALL CAPS headers
+    - Roman numeral prefixed: "III. Anomalies & Risks"
+    - Numbered: "1. Header"
+    - Title case, short, no sentence punctuation: "Drift Findings"
+    - Short label ending with colon: "Risks:"
 
-    NO FALLBACK to full-document scan. Conservative extraction only.
+    This prevents content lines that happen to contain keywords from
+    being misidentified as section headers.
     """
     lines = text.split("\n")
     relevant = []
     in_section = False
     matched_sections = 0
 
+    def looks_like_header(stripped):
+        return (
+            bool(re.match(r"^#{1,3}\s", stripped)) or
+            bool(re.match(r"^[A-Z][A-Z\s&/]{3,}$", stripped)) or
+            (len(stripped) < 50 and stripped.endswith(":")) or
+            bool(re.match(r"^[IVXivx]+\.\s+[A-Z]", stripped)) or
+            bool(re.match(r"^\d+\.\s+[A-Z]", stripped)) or
+            (len(stripped) < 60 and
+             bool(re.match(r"^[A-Z][a-zA-Z\s&/–-]+$", stripped)) and
+             not stripped.endswith(".") and
+             not stripped.endswith(",") and
+             stripped.count(" ") <= 5)
+        )
+
     for line in lines:
         stripped = line.strip()
         lower = stripped.lower()
 
-        # A line is a section header only if it contains a marker AND looks like a header
         contains_marker = any(marker in lower for marker in section_markers)
-        looks_like_header = (
-            bool(re.match(r"^#{1,3}\s", stripped)) or
-            bool(re.match(r"^[A-Z][A-Z\s&/]{3,}$", stripped)) or
-            (len(stripped) < 50 and stripped.endswith(":"))
-        )
-        is_header = contains_marker and looks_like_header
+        is_header = contains_marker and looks_like_header(stripped)
 
         if is_header:
             in_section = True
@@ -141,10 +154,11 @@ def extract_relevant_lines(text: str, section_markers: list,
         if in_section and stripped and (
             re.match(r"^#{1,3}\s", stripped) or
             re.match(r"^[A-Z][A-Z\s]{4,}$", stripped) or
-            re.match(r"^[-=]{3,}$", stripped)
+            re.match(r"^[-=]{3,}$", stripped) or
+            (looks_like_header(stripped) and not stripped.startswith("-") and
+             not stripped.startswith("•"))
         ):
-            if not stripped.startswith("-") and not stripped.startswith("•"):
-                in_section = False
+            in_section = False
 
         if in_section and len(stripped) >= min_length:
             relevant.append(stripped)
