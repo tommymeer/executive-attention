@@ -227,12 +227,6 @@ if st.session_state.reasoning_output and st.session_state.findings:
         use_container_width=True,
     )
 
-    # Debug expander (remove before ship)
-    with st.expander("Debug — Signal Extraction Summary", expanded=False):
-        summary = st.session_state.extraction_summary
-        if summary:
-            st.json(summary)
-
 # ── Footer ────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
