@@ -72,6 +72,11 @@ def render_badges(badge_sources: list):
 
 # ── Requires Attention Now ────────────────────────────────────────────────────
 
+def escape_dollars(text: str) -> str:
+    """Escape dollar signs to prevent Streamlit from rendering them as LaTeX."""
+    return text.replace("$", r"\$")
+
+
 def render_attention_findings(attention_findings: list):
     if not attention_findings:
         st.info("No convergent themes detected above threshold in the provided signals.")
@@ -85,9 +90,9 @@ def render_attention_findings(attention_findings: list):
             )
             render_badges(finding.get("badge_sources", []))
             st.markdown("")
-            st.markdown(finding.get("synthesis", ""))
+            st.markdown(escape_dollars(finding.get("synthesis", "")))
             st.markdown(
-                f"**Required action:** {finding.get('required_action', '')}",
+                f"**Required action:** {escape_dollars(finding.get('required_action', ''))}",
             )
             st.markdown("---")
 
@@ -106,20 +111,20 @@ def render_decision_findings(decision_findings: list):
             )
             render_badges(finding.get("badge_sources", []))
             st.markdown("")
-            st.markdown(finding.get("synthesis", ""))
+            st.markdown(escape_dollars(finding.get("synthesis", "")))
 
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown(f"**Decision required:** {finding.get('decision_required', '')}")
+                st.markdown(f"**Decision required:** {escape_dollars(finding.get('decision_required', ''))}")
             with col2:
                 if finding.get("deadline_reference"):
-                    st.markdown(f"**Deadline:** {finding.get('deadline_reference', '')}")
+                    st.markdown(f"**Deadline:** {escape_dollars(finding.get('deadline_reference', ''))}")
 
             if finding.get("consequence_of_deferral"):
                 st.markdown(
                     f"<div style='background:#fef2f2; padding:10px; border-left:3px solid #b91c1c; "
                     f"border-radius:4px; font-size:13px; color:#7f1d1d; margin-top:8px'>"
-                    f"⚠ {finding['consequence_of_deferral']}</div>",
+                    f"⚠ {escape_dollars(finding['consequence_of_deferral'])}</div>",
                     unsafe_allow_html=True,
                 )
             st.markdown("---")
