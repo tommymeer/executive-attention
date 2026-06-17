@@ -1,4 +1,4 @@
-"""
+X"""
 theme_config.py
 Executive Attention Synthesizer — Theme Configuration
 
@@ -130,12 +130,14 @@ THEME_KEYWORDS = {
         "red", "amber", "yellow", "status red", "status yellow",
     ],
     "hiring_talent": [
-        "hiring", "hire", "headcount", "hc", "recruiter", "recruiting",
-        "recruitment", "open role", "open position", "unfilled", "vacancy",
-        "backfill", "attrition", "turnover", "retention", "key person",
-        "key hire", "critical hire", "talent", "talent gap", "skills gap",
-        "onboarding", "ramp", "new hire", "offer", "offer accepted",
-        "declined offer", "pipeline", "candidate", "interview",
+        "recruiter", "recruiting", "recruitment",
+        "open role", "open position", "unfilled role", "unfilled position",
+        "vacancy", "backfill", "job posting", "job req",
+        "offer accepted", "offer declined", "declined offer",
+        "candidate pipeline", "interview process", "hiring freeze",
+        "key hire", "critical hire", "engineering hire",
+        "attrition", "turnover rate", "regrettable attrition",
+        "talent gap", "skills gap", "headcount approved",
     ],
 }
 
