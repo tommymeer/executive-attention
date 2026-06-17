@@ -4,10 +4,17 @@ Executive Attention Synthesizer — Signal Extraction Layer
 
 Parses each tool output (.txt) into structured signal objects.
 Deterministic. No Claude. Regex and pattern matching only.
+
+Changes from v1:
+- Removed full-document fallback in extract_relevant_lines.
+  If no section headers match, return empty list with a warning flag.
+  Prevents keyword matching from firing on every line of every output.
+- Added per-tool signal cap (MAX_SIGNALS_PER_TOOL = 20).
+  Prevents high-volume tools from dominating convergence scores.
+- Signals sorted by severity before cap is applied — highest quality first.
 """
 
 import re
-from typing import Optional
 from theme_config import (
     THEME_KEYWORDS,
     SEVERITY_3_MARKERS,
@@ -19,6 +26,11 @@ from theme_config import (
     DEFERRAL_MARKERS,
     TIME_REFERENCE_PATTERNS,
 )
+
+# Maximum signals extracted per tool per run.
+# Prevents dense outputs from inflating convergence scores.
+# Signals are sorted by severity before cap — highest severity signals kept.
+MAX_SIGNALS_PER_TOOL = 20
 
 
 # ── Signal object ─────────────────────────────────────────────────────────────
@@ -81,61 +93,71 @@ def map_themes(text: str) -> list:
             if kw in lower:
                 matched.append(theme)
                 break
-    # Cap at 3 themes per signal
     return matched[:3] if matched else []
 
 
-# ── Line extraction utilities ─────────────────────────────────────────────────
+# ── Line extraction — section-header gated ────────────────────────────────────
 
 def extract_relevant_lines(text: str, section_markers: list,
-                           min_length: int = 20) -> list:
+                           min_length: int = 20) -> tuple:
     """
     Extracts lines from sections whose headers match section_markers.
-    Returns list of non-empty lines from those sections.
+    Returns (lines, matched_sections_count).
+
+    A line is treated as a section header only if it BOTH:
+    1. Contains a section marker keyword
+    2. Looks structurally like a header (markdown #, short title, ALL CAPS)
+
+    This prevents content lines that happen to contain keywords
+    (e.g. "Meridian Health stalled in procurement") from being
+    misidentified as section headers, which was swallowing all content.
+
+    NO FALLBACK to full-document scan. Conservative extraction only.
     """
     lines = text.split("\n")
     relevant = []
     in_section = False
+    matched_sections = 0
 
     for line in lines:
         stripped = line.strip()
         lower = stripped.lower()
 
-        # Check if this line is a section header
-        is_header = any(marker in lower for marker in section_markers)
-        if is_header and len(stripped) < 80:
+        # A line is a section header only if it contains a marker AND looks like a header
+        contains_marker = any(marker in lower for marker in section_markers)
+        looks_like_header = (
+            bool(re.match(r"^#{1,3}\s", stripped)) or
+            bool(re.match(r"^[A-Z][A-Z\s&/]{3,}$", stripped)) or
+            (len(stripped) < 50 and stripped.endswith(":"))
+        )
+        is_header = contains_marker and looks_like_header
+
+        if is_header:
             in_section = True
+            matched_sections += 1
             continue
 
-        # Check if we've hit a new major section (uppercase header, dashes, etc.)
+        # Exit section on any new top-level header structure
         if in_section and stripped and (
             re.match(r"^#{1,3}\s", stripped) or
             re.match(r"^[A-Z][A-Z\s]{4,}$", stripped) or
             re.match(r"^[-=]{3,}$", stripped)
         ):
-            # Only exit section if it's clearly a new top-level section
-            # and not a bullet continuation
             if not stripped.startswith("-") and not stripped.startswith("•"):
                 in_section = False
 
         if in_section and len(stripped) >= min_length:
             relevant.append(stripped)
 
-    # Fallback: if no section headers matched, extract all substantive lines
-    if not relevant:
-        for line in lines:
-            stripped = line.strip()
-            if len(stripped) >= min_length and not re.match(r"^#{1,3}\s", stripped):
-                relevant.append(stripped)
+    return relevant, matched_sections
 
-    return relevant
-
-
-def split_into_sentences(text: str) -> list:
-    """Split text into sentence-like chunks for signal extraction."""
-    # Split on sentence endings and bullet points
-    chunks = re.split(r'(?<=[.!?])\s+|(?=\n[-•·])', text)
-    return [c.strip() for c in chunks if len(c.strip()) >= 20]
+def apply_signal_cap(signals: list, cap: int = MAX_SIGNALS_PER_TOOL) -> list:
+    """
+    Sort signals by severity descending, then apply cap.
+    Highest-severity signals are kept when cap is applied.
+    """
+    sorted_signals = sorted(signals, key=lambda s: s["severity"], reverse=True)
+    return sorted_signals[:cap]
 
 
 # ── Per-tool extraction ───────────────────────────────────────────────────────
@@ -143,7 +165,23 @@ def split_into_sentences(text: str) -> list:
 def extract_from_wbr(text: str, tool_index: int) -> list:
     """Extract signals from WBR Generator output."""
     signals = []
-    lines = extract_relevant_lines(text, WBR_EXTRACT_SECTIONS)
+    lines, matched = extract_relevant_lines(text, WBR_EXTRACT_SECTIONS)
+
+    if matched == 0:
+        # No recognized section headers — extract conservatively from
+        # lines that contain both a severity marker AND a theme keyword.
+        # This is a tighter constraint than full-document fallback.
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if len(stripped) < 20:
+                continue
+            lower = stripped.lower()
+            has_severity = any(m in lower for m in SEVERITY_3_MARKERS + SEVERITY_2_MARKERS)
+            if not has_severity:
+                continue
+            themes = map_themes(stripped)
+            if themes:
+                lines.append(stripped)
 
     for i, line in enumerate(lines):
         themes = map_themes(line)
@@ -153,7 +191,6 @@ def extract_from_wbr(text: str, tool_index: int) -> list:
         severity = score_severity(line)
         time_ref = extract_time_reference(line)
 
-        # Determine signal type
         signal_type = "Risk"
         if any(w in line.lower() for w in ["decision", "requires", "action"]):
             signal_type = "Gap"
@@ -162,7 +199,7 @@ def extract_from_wbr(text: str, tool_index: int) -> list:
         elif any(w in line.lower() for w in ["decline", "drop", "below", "miss"]):
             signal_type = "Risk"
 
-        signal = make_signal(
+        signals.append(make_signal(
             signal_id=f"wbr_{tool_index}_{i}",
             source_tool="WBR",
             domain="Performance",
@@ -171,16 +208,28 @@ def extract_from_wbr(text: str, tool_index: int) -> list:
             themes=themes,
             text=line[:300],
             week_reference=time_ref,
-        )
-        signals.append(signal)
+        ))
 
-    return signals
+    return apply_signal_cap(signals)
 
 
 def extract_from_meeting(text: str, tool_index: int) -> list:
     """Extract signals from Meeting Intelligence output."""
     signals = []
-    lines = extract_relevant_lines(text, MEETING_EXTRACT_SECTIONS)
+    lines, matched = extract_relevant_lines(text, MEETING_EXTRACT_SECTIONS)
+
+    if matched == 0:
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if len(stripped) < 20:
+                continue
+            lower = stripped.lower()
+            has_severity = any(m in lower for m in SEVERITY_3_MARKERS + SEVERITY_2_MARKERS + DEFERRAL_MARKERS)
+            if not has_severity:
+                continue
+            themes = map_themes(stripped)
+            if themes:
+                lines.append(stripped)
 
     for i, line in enumerate(lines):
         themes = map_themes(line)
@@ -191,7 +240,6 @@ def extract_from_meeting(text: str, tool_index: int) -> list:
         severity = boost_deferral_severity(line, base_severity)
         time_ref = extract_time_reference(line)
 
-        # Determine signal type
         signal_type = "Deferral"
         if any(w in line.lower() for w in ["blocker", "blocked", "impediment"]):
             signal_type = "Block"
@@ -200,7 +248,7 @@ def extract_from_meeting(text: str, tool_index: int) -> list:
         elif any(w in line.lower() for w in ["open", "unresolved", "pending", "tbd"]):
             signal_type = "Deferral"
 
-        signal = make_signal(
+        signals.append(make_signal(
             signal_id=f"meeting_{tool_index}_{i}",
             source_tool="Meeting",
             domain="Decision",
@@ -209,16 +257,28 @@ def extract_from_meeting(text: str, tool_index: int) -> list:
             themes=themes,
             text=line[:300],
             week_reference=time_ref,
-        )
-        signals.append(signal)
+        ))
 
-    return signals
+    return apply_signal_cap(signals)
 
 
 def extract_from_pipeline(text: str, tool_index: int) -> list:
     """Extract signals from Pipeline Synthesizer output."""
     signals = []
-    lines = extract_relevant_lines(text, PIPELINE_EXTRACT_SECTIONS)
+    lines, matched = extract_relevant_lines(text, PIPELINE_EXTRACT_SECTIONS)
+
+    if matched == 0:
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if len(stripped) < 20:
+                continue
+            lower = stripped.lower()
+            has_severity = any(m in lower for m in SEVERITY_3_MARKERS + SEVERITY_2_MARKERS)
+            if not has_severity:
+                continue
+            themes = map_themes(stripped)
+            if themes:
+                lines.append(stripped)
 
     for i, line in enumerate(lines):
         themes = map_themes(line)
@@ -227,7 +287,6 @@ def extract_from_pipeline(text: str, tool_index: int) -> list:
 
         severity = score_severity(line)
 
-        # Pipeline-specific severity boost: named deals + inactivity
         if (any(w in line.lower() for w in ["negotiation", "proposal", "late stage"])
                 and any(w in line.lower() for w in ["no activity", "stall", "14", "days"])):
             severity = 3
@@ -242,7 +301,7 @@ def extract_from_pipeline(text: str, tool_index: int) -> list:
         elif any(w in line.lower() for w in ["action", "leadership"]):
             signal_type = "Gap"
 
-        signal = make_signal(
+        signals.append(make_signal(
             signal_id=f"pipeline_{tool_index}_{i}",
             source_tool="Pipeline",
             domain="Commercial",
@@ -251,16 +310,28 @@ def extract_from_pipeline(text: str, tool_index: int) -> list:
             themes=themes,
             text=line[:300],
             week_reference=time_ref,
-        )
-        signals.append(signal)
+        ))
 
-    return signals
+    return apply_signal_cap(signals)
 
 
 def extract_from_initiative(text: str, tool_index: int) -> list:
     """Extract signals from Initiative Intelligence output."""
     signals = []
-    lines = extract_relevant_lines(text, INITIATIVE_EXTRACT_SECTIONS)
+    lines, matched = extract_relevant_lines(text, INITIATIVE_EXTRACT_SECTIONS)
+
+    if matched == 0:
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if len(stripped) < 20:
+                continue
+            lower = stripped.lower()
+            has_severity = any(m in lower for m in SEVERITY_3_MARKERS + SEVERITY_2_MARKERS)
+            if not has_severity:
+                continue
+            themes = map_themes(stripped)
+            if themes:
+                lines.append(stripped)
 
     for i, line in enumerate(lines):
         themes = map_themes(line)
@@ -269,7 +340,6 @@ def extract_from_initiative(text: str, tool_index: int) -> list:
 
         severity = score_severity(line)
 
-        # Initiative severity override: blocked + strategic bet = severity 3
         if (any(w in line.lower() for w in ["blocked", "blocker"])
                 and any(w in line.lower() for w in ["strategic", "bet", "priority"])):
             severity = 3
@@ -286,7 +356,7 @@ def extract_from_initiative(text: str, tool_index: int) -> list:
         elif any(w in line.lower() for w in ["delay", "behind", "slipping"]):
             signal_type = "Risk"
 
-        signal = make_signal(
+        signals.append(make_signal(
             signal_id=f"initiative_{tool_index}_{i}",
             source_tool="Initiative",
             domain="Strategic",
@@ -295,10 +365,9 @@ def extract_from_initiative(text: str, tool_index: int) -> list:
             themes=themes,
             text=line[:300],
             week_reference=time_ref,
-        )
-        signals.append(signal)
+        ))
 
-    return signals
+    return apply_signal_cap(signals)
 
 
 # ── Master extraction dispatcher ──────────────────────────────────────────────
@@ -307,8 +376,7 @@ def extract_signals(tool_outputs: dict) -> list:
     """
     Main entry point. Accepts dict of {tool_name: text_content}.
     Returns combined list of signal objects across all provided tools.
-
-    tool_outputs keys: "WBR", "Meeting", "Pipeline", "Initiative"
+    Each tool contributes at most MAX_SIGNALS_PER_TOOL signals.
     """
     all_signals = []
     extractors = {
@@ -329,7 +397,6 @@ def extract_signals(tool_outputs: dict) -> list:
 # ── Signal quality summary ────────────────────────────────────────────────────
 
 def summarize_extraction(signals: list, tool_outputs: dict) -> dict:
-    """Returns a summary of what was extracted for debugging and coverage header."""
     tool_counts = {}
     for tool in tool_outputs:
         tool_counts[tool] = len([s for s in signals if s["source_tool"] == tool])
@@ -343,5 +410,6 @@ def summarize_extraction(signals: list, tool_outputs: dict) -> dict:
             1: len([s for s in signals if s["severity"] == 1]),
             2: len([s for s in signals if s["severity"] == 2]),
             3: len([s for s in signals if s["severity"] == 3]),
-        }
+        },
+        "cap_applied": MAX_SIGNALS_PER_TOOL,
     }
