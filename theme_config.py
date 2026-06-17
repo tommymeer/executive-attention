@@ -165,6 +165,9 @@ WBR_EXTRACT_SECTIONS = [
     "anomal", "risk", "decision", "flag", "concern", "alert",
     "watch", "action required", "requires attention", "key finding",
     "highlight", "lowlight", "below target", "missed",
+    # WBR Generator actual output section headers
+    "executive summary", "key metric", "leadership question",
+    "decisions required", "anomalies",
 ]
 
 # ── Meeting Intelligence section headers ──────────────────────────────────────
