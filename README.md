@@ -1,5 +1,4 @@
 # Executive Attention Synthesizer
-
 **Cross-signal convergence detection.** Identifies where multiple organizational realities are pointing at the same underlying problem.
 
 Part of the [Ground Truth Decisioning System](https://thomasmeerschwam.com) — five tools that convert organizational signal into executive judgment.
@@ -14,7 +13,7 @@ It detects convergence — when multiple organizational domains independently su
 
 - **Requires Attention Now** — convergent findings across ≥2 organizational domains
 - **Decision Cannot Be Postponed** — convergent findings with a named time constraint
-- **What the Signals Suggest** — the structural hypothesis: what the organization appears to believe vs. what the signals suggest is actually true
+- **What the Signals Suggest** — the structural hypothesis: primary hypothesis, competing hypothesis, and unresolved ambiguity across the convergent signal set
 
 ---
 
@@ -25,7 +24,6 @@ Business Context (type + stage + optional text)
         ↓                              ↓
   Output Ranking              Claude Interpretation
   (deterministic)             (reasoning layer)
-
 Signal Extraction → Theme Mapping → Convergence Scoring → Classification → Claude
   [deterministic]   [deterministic]   [deterministic]    [deterministic]  [reasoning]
 ```
@@ -80,7 +78,7 @@ streamlit run app.py
 |---|---|
 | Frontend | Streamlit |
 | Backend | Python |
-| API | Anthropic Claude Sonnet (structured tool use) |
+| API | Anthropic Claude Sonnet (structured JSON responses) |
 | Theme mapping | Python keyword dictionaries (`theme_config.py`) |
 | Hosting | Streamlit Community Cloud |
 
@@ -94,7 +92,7 @@ executive-attention-synthesizer/
 ├── theme_config.py           # Keyword maps, theme taxonomy, ranking tables
 ├── signal_extraction.py      # Parses tool outputs → signal objects
 ├── convergence.py            # Theme aggregation, scoring, classification, bundles
-├── claude_reasoning.py       # Claude API call, structured tool use, prompt design
+├── claude_reasoning.py       # Claude API calls, prompt design, fallback rendering
 ├── export.py                 # .txt export builder
 ├── requirements.txt
 ├── components/
@@ -120,6 +118,7 @@ All keyword maps live in `theme_config.py`. To add coverage for new organization
 - Input format dependency — extraction is calibrated to Ground Truth tool output structures; edited outputs may degrade signal quality
 - Keyword-based theme mapping — idiosyncratic organizational language may not match dictionaries; use the Optional Context field to compensate
 - Theme taxonomy fixed in v1 — theme inflation or gaps become visible after test runs against real data
+- Output cap creates implicit hierarchy — when multiple themes score at convergence threshold, the 3-finding cap deprioritizes equally strong signals; Watch Items surfaces this explicitly when it occurs, but the flat score distribution is not visible in the primary output
 
 ---
 
