@@ -8,7 +8,6 @@ Three structured tools: attention finding, decision finding, signal observation.
 """
 
 import os
-import json
 import anthropic
 from dotenv import load_dotenv
 
@@ -109,9 +108,10 @@ TOOLS = [
         "name": "write_signal_observation",
         "description": (
             "Write the What the Signals Suggest structural hypothesis. "
-            "Three named components: observed pattern, likely implicit belief, alternative explanation. "
+            "THREE named components required: observed_pattern, likely_implicit_belief, alternative_explanation. "
             "Not a summary. Surfaces what the organization appears to believe vs. "
-            "what the convergent signals suggest is actually true."
+            "what the convergent signals suggest is actually true. "
+            "This tool MUST be called exactly once in every response."
         ),
         "input_schema": {
             "type": "object",
@@ -222,16 +222,19 @@ WHAT YOU ARE DOING:
 - For Decision Cannot Be Postponed findings: name the convergence, the specific decision, the deadline, and what deferral costs.
 - For What the Signals Suggest: produce the three-part structural hypothesis. Surface the tension between what the organization appears to believe and what the signals suggest is true.
 
+REQUIRED TOOL CALLS:
+- Call write_attention_finding once for each Requires Attention Now bundle provided.
+- Call write_decision_finding once for each Decision Cannot Be Postponed bundle provided.
+- Call write_signal_observation EXACTLY ONCE. This is mandatory. Do not skip it. It must be the last tool call you make.
+
 SPECIFICITY REQUIREMENTS:
 - Every finding must name the specific theme and the specific signals supporting it.
 - Every action or decision must be specific — not "monitor" or "discuss."
-- Quantify where the signals provide numbers. "Enterprise win rate down 18%" is better than "enterprise win rate declining."
+- Quantify where the signals provide numbers.
 - Attribution is deterministic — badge sources come from the bundle, not from your judgment.
 
 ABSENCE AS EVIDENCE:
 - If a theme scores high but a key organizational domain is absent from contributing signals, note the gap.
-- "Enterprise readiness is flagged in performance, pipeline, and execution — but no decision signal is present, 
-  suggesting this pattern has not yet surfaced in leadership conversation" is valuable.
 
 HYPOTHESIS FRAMING:
 - What the Signals Suggest is not a summary. It is a structural observation.
@@ -242,11 +245,7 @@ HYPOTHESIS FRAMING:
 
 {stage_framing}
 
-{optional_section}
-
-Use the provided tools to structure your output. Use write_attention_finding for each Requires Attention Now finding,
-write_decision_finding for each Decision Cannot Be Postponed finding, and write_signal_observation once for 
-What the Signals Suggest (based on the top convergent themes provided)."""
+{optional_section}"""
 
 
 # ── User prompt builder ───────────────────────────────────────────────────────
@@ -276,10 +275,17 @@ def build_user_prompt(findings: dict) -> str:
             sections.append(item.get("bundle", ""))
             sections.append("")
 
+    sections.append(
+        "\n=== REQUIRED FINAL STEP ===\n"
+        "You MUST call write_signal_observation exactly once as your final tool call. "
+        "Do not finish without calling it. "
+        "Surface the three-part hypothesis based on the convergent patterns above."
+    )
+
     if not sections:
         return (
             "No convergent themes were detected above the threshold in the provided signals. "
-            "Please call write_signal_observation with an observed_pattern noting the absence of "
+            "Call write_signal_observation with an observed_pattern noting the absence of "
             "convergent findings, and suggest what additional signal inputs might surface patterns."
         )
 
@@ -350,7 +356,7 @@ def run_reasoning(findings: dict, business_context: dict) -> dict:
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4000,
+        max_tokens=6000,
         system=system_prompt,
         tools=TOOLS,
         tool_choice={"type": "any"},
