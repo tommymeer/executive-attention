@@ -2,35 +2,42 @@
 components/output_display.py
 Executive Attention Synthesizer — Output Display Component
 
-Renders coverage header, all three output sections, and Watch Items.
-Badge attribution is deterministic — sourced from signal bundles, not Claude.
+Cards are created from deterministic bundles.
+Claude fills narrative text. Fallback text renders if Claude fails.
+Sections always exist. Claude never decides whether a section appears.
 """
 
 import streamlit as st
 
 
+# ── Utility ───────────────────────────────────────────────────────────────────
+
+def escape_dollars(text: str) -> str:
+    """Prevent Streamlit from rendering dollar signs as LaTeX."""
+    return text.replace("$", r"\$")
+
+
 # ── Coverage header ───────────────────────────────────────────────────────────
 
 def render_coverage_header(tool_outputs: dict):
-    """Four domain badges showing which organizational realities are present."""
     domains = {
-        "WBR":        ("Performance", "🟢", "⚪"),
-        "Meeting":    ("Decision", "🟢", "⚪"),
-        "Pipeline":   ("Commercial", "🟢", "⚪"),
-        "Initiative": ("Strategic", "🟢", "⚪"),
+        "WBR":        "Performance",
+        "Meeting":    "Decision",
+        "Pipeline":   "Commercial",
+        "Initiative": "Strategic",
     }
-
     cols = st.columns(4)
-    for i, (tool, (domain, active_icon, inactive_icon)) in enumerate(domains.items()):
+    for i, (tool, domain) in enumerate(domains.items()):
         with cols[i]:
             is_present = tool in tool_outputs
-            icon = active_icon if is_present else inactive_icon
-            status = "Present" if is_present else "Not provided"
             color = "#2d6a4f" if is_present else "#888888"
+            bg = "#d8f3dc" if is_present else "#f8f8f8"
+            border = "#2d6a4f" if is_present else "#dddddd"
+            icon = "🟢" if is_present else "⚪"
+            status = "Present" if is_present else "Not provided"
             st.markdown(
-                f"""<div style='text-align:center; padding:12px; 
-                    border:1px solid {"#2d6a4f" if is_present else "#dddddd"}; 
-                    border-radius:6px; background:{"#d8f3dc" if is_present else "#f8f8f8"}'>
+                f"""<div style='text-align:center; padding:12px;
+                    border:1px solid {border}; border-radius:6px; background:{bg}'>
                     <div style='font-size:20px'>{icon}</div>
                     <div style='font-weight:600; color:{color}; font-size:13px'>{domain}</div>
                     <div style='font-size:11px; color:#888'>{tool}</div>
@@ -39,13 +46,12 @@ def render_coverage_header(tool_outputs: dict):
                 unsafe_allow_html=True,
             )
 
-    missing = [tool for tool in domains if tool not in tool_outputs]
+    missing = [t for t in domains if t not in tool_outputs]
     if missing:
-        missing_domains = [domains[t][0] for t in missing]
+        missing_domains = [domains[t] for t in missing]
         st.caption(
             f"⚠ {', '.join(missing_domains)} signal(s) not provided. "
-            f"Convergence analysis reflects available domains only. "
-            f"Cross-domain findings may be understated."
+            f"Convergence analysis reflects available domains only."
         )
 
 
@@ -72,14 +78,17 @@ def render_badges(badge_sources: list):
 
 # ── Requires Attention Now ────────────────────────────────────────────────────
 
-def escape_dollars(text: str) -> str:
-    """Escape dollar signs to prevent Streamlit from rendering them as LaTeX."""
-    return text.replace("$", r"\$")
-
-
 def render_attention_findings(attention_findings: list):
+    """
+    Cards are created from deterministic data.
+    Claude-generated text fills synthesis and required_action.
+    If empty, section notes no convergent themes — not a blank page.
+    """
     if not attention_findings:
-        st.info("No convergent themes detected above threshold in the provided signals.")
+        st.info(
+            "No convergent themes detected above threshold in the provided signals. "
+            "All findings have time pressure and appear in Decision Cannot Be Postponed."
+        )
         return
 
     for finding in attention_findings:
@@ -90,10 +99,19 @@ def render_attention_findings(attention_findings: list):
             )
             render_badges(finding.get("badge_sources", []))
             st.markdown("")
-            st.markdown(escape_dollars(finding.get("synthesis", "")))
-            st.markdown(
-                f"**Required action:** {escape_dollars(finding.get('required_action', ''))}",
-            )
+
+            synthesis = finding.get("synthesis", "")
+            if synthesis:
+                st.markdown(escape_dollars(synthesis))
+            else:
+                st.caption("_Narrative generation failed — see contributing signals below._")
+                for s in finding.get("signals", [])[:3]:
+                    st.caption(f"· {s['text'][:120]}")
+
+            required_action = finding.get("required_action", "")
+            if required_action:
+                st.markdown(f"**Required action:** {escape_dollars(required_action)}")
+
             st.markdown("---")
 
 
@@ -111,20 +129,32 @@ def render_decision_findings(decision_findings: list):
             )
             render_badges(finding.get("badge_sources", []))
             st.markdown("")
-            st.markdown(escape_dollars(finding.get("synthesis", "")))
+
+            synthesis = finding.get("synthesis", "")
+            if synthesis:
+                st.markdown(escape_dollars(synthesis))
+            else:
+                st.caption("_Narrative generation failed — see contributing signals below._")
+                for s in finding.get("signals", [])[:3]:
+                    st.caption(f"· {s['text'][:120]}")
 
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown(f"**Decision required:** {escape_dollars(finding.get('decision_required', ''))}")
+                decision = finding.get("decision_required", "")
+                if decision:
+                    st.markdown(f"**Decision required:** {escape_dollars(decision)}")
             with col2:
-                if finding.get("deadline_reference"):
-                    st.markdown(f"**Deadline:** {escape_dollars(finding.get('deadline_reference', ''))}")
+                deadline = finding.get("deadline_reference", "")
+                if deadline:
+                    st.markdown(f"**Deadline:** {escape_dollars(deadline)}")
 
-            if finding.get("consequence_of_deferral"):
+            consequence = finding.get("consequence_of_deferral", "")
+            if consequence:
                 st.markdown(
-                    f"<div style='background:#fef2f2; padding:10px; border-left:3px solid #b91c1c; "
-                    f"border-radius:4px; font-size:13px; color:#7f1d1d; margin-top:8px'>"
-                    f"⚠ {escape_dollars(finding['consequence_of_deferral'])}</div>",
+                    f"<div style='background:#fef2f2; padding:10px; "
+                    f"border-left:3px solid #b91c1c; border-radius:4px; "
+                    f"font-size:13px; color:#7f1d1d; margin-top:8px'>"
+                    f"⚠ {escape_dollars(consequence)}</div>",
                     unsafe_allow_html=True,
                 )
             st.markdown("---")
@@ -132,35 +162,68 @@ def render_decision_findings(decision_findings: list):
 
 # ── What the Signals Suggest ──────────────────────────────────────────────────
 
+CONFIDENCE_COLORS = {
+    "High":   ("#1b4332", "#d8f3dc"),
+    "Medium": ("#5c2d0e", "#fde8d0"),
+    "Low":    ("#5c1e1e", "#fde8d0"),
+}
+
 def render_signal_observation(signal_observation: dict):
     if not signal_observation:
+        st.info("Structural observation unavailable — insufficient convergent signal.")
         return
 
+    # Confidence indicator
+    level = signal_observation.get("confidence_level", "")
+    reason = signal_observation.get("confidence_reason", "")
+    if level:
+        fg, bg = CONFIDENCE_COLORS.get(level, ("#333", "#eee"))
+        st.markdown(
+            f"<div style='margin-bottom:12px'>"
+            f"<span style='background:{bg}; color:{fg}; padding:3px 10px; "
+            f"border-radius:12px; font-size:11px; font-weight:600'>"
+            f"Observation Confidence: {level}</span>"
+            f"<span style='font-size:11px; color:#666; margin-left:8px'>{reason}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    # Three-part hypothesis
     st.markdown(
         "<div style='background:#fafafa; border:1px solid #e5e7eb; "
-        "border-radius:8px; padding:20px; margin-top:8px'>",
+        "border-radius:8px; padding:20px; margin-top:4px'>",
         unsafe_allow_html=True,
     )
 
-    st.markdown("**Observed Pattern**")
-    st.markdown(signal_observation.get("observed_pattern", ""))
-    st.markdown("")
+    observed = signal_observation.get("observed_pattern", "")
+    belief = signal_observation.get("likely_implicit_belief", "")
+    alternative = signal_observation.get("alternative_explanation", "")
 
-    st.markdown("**Likely Implicit Belief**")
-    st.markdown(
-        f"<div style='color:#374151; font-style:italic'>"
-        f"{signal_observation.get('likely_implicit_belief', '')}</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("")
+    if observed:
+        st.markdown("**Observed Pattern**")
+        st.markdown(escape_dollars(observed))
+        st.markdown("")
 
-    st.markdown("**Alternative Explanation**")
-    st.markdown(
-        f"<div style='background:#eff6ff; padding:12px; border-radius:6px; "
-        f"border-left:3px solid #3b82f6; font-size:13px'>"
-        f"{signal_observation.get('alternative_explanation', '')}</div>",
-        unsafe_allow_html=True,
-    )
+    if belief:
+        st.markdown("**Likely Implicit Belief**")
+        st.markdown(
+            f"<div style='color:#374151; font-style:italic'>"
+            f"{escape_dollars(belief)}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
+    if alternative:
+        st.markdown("**Alternative Explanation**")
+        st.markdown(
+            f"<div style='background:#eff6ff; padding:12px; border-radius:6px; "
+            f"border-left:3px solid #3b82f6; font-size:13px'>"
+            f"{escape_dollars(alternative)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    if not any([observed, belief, alternative]):
+        st.caption("_Observation generation failed — insufficient signal for structural hypothesis._")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -171,10 +234,12 @@ def render_watch_items(watch_items: list):
     if not watch_items:
         return
 
-    with st.expander(f"Watch Items ({len(watch_items)} emerging patterns — below convergence threshold)"):
+    with st.expander(
+        f"Watch Items — {len(watch_items)} emerging pattern(s) below convergence threshold"
+    ):
         st.caption(
-            "These themes have signal but do not yet meet the convergence threshold "
-            "(score ≥ 6, distinct tools ≥ 2). Scores are shown for reference."
+            "These themes have signal but do not meet the convergence threshold "
+            "(score ≥ 6, distinct tools ≥ 2). Scores shown for reference."
         )
         for item in watch_items:
             si = item["score_info"]
@@ -191,7 +256,10 @@ def render_watch_items(watch_items: list):
 # ── Master output renderer ────────────────────────────────────────────────────
 
 def render_full_output(reasoning_output: dict, findings: dict, tool_outputs: dict):
-    """Main entry point. Renders all output sections in order."""
+    """
+    Main entry point. All sections render from deterministic data.
+    Claude text fills cards. Fallback renders if Claude failed.
+    """
 
     # Coverage header
     st.subheader("Signal Coverage")
@@ -209,11 +277,9 @@ def render_full_output(reasoning_output: dict, findings: dict, tool_outputs: dic
         render_decision_findings(decision_findings)
 
     # What the Signals Suggest
-    observation = reasoning_output.get("signal_observation")
-    if observation:
-        st.subheader("What the Signals Suggest")
-        render_signal_observation(observation)
-        st.markdown("")
+    st.subheader("What the Signals Suggest")
+    render_signal_observation(reasoning_output.get("signal_observation"))
+    st.markdown("")
 
     # Watch Items
     watch = findings.get("watch", [])
